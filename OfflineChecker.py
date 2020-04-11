@@ -1,5 +1,5 @@
 import pythondcspro as pythondcs
-import datetime, configparser, textwrap
+import datetime, configparser, textwrap, argparse
 from operator import itemgetter
 
 def MACHex(MacInt):
@@ -68,8 +68,12 @@ def GetModbusDevicesByIdc(MAC):
     Devices = {}
   return Devices
 
+parser = argparse.ArgumentParser(description="Checks DCS Server for Offline devices")
+parser.add_argument("cfg", action='store', metavar=__file__+'.ini', nargs="?", default=__file__+'.ini', type=argparse.FileType('r+t'), help="Path to configuration file")
+args = parser.parse_args()
+
 cfg=configparser.RawConfigParser()
-cfgfile = open(__file__+'.ini', 'r+t')
+cfgfile=args.cfg
 cfg.read_file(cfgfile)
 
 now = datetime.datetime.now(datetime.timezone.utc)
@@ -167,7 +171,7 @@ if cfg.getboolean('EMAIL', 'enabled') and (len(OfflineNow) != 0  or len(NowOnlin
     server.quit()
     print("Email Sent!")
     try:
-      with open(__file__+'.email', 'wt') as dump:
+      with open(cfg.get('FILES','email',fallback=__file__+'.email'), 'wt') as dump:
         dump.write(emailmsg)
     except Exception as fail:
       print('Failed to save email:', fail)
@@ -177,7 +181,7 @@ else:
   print("\nNo email sent since nothing has changed (or it was disabled)!")
 
 try:
-  with open(__file__+'.html', 'wt') as dump:
+  with open(cfg.get('FILES','html',fallback=__file__+'.html'), 'wt') as dump:
     dump.write(FullOutput)
 except Exception as fail:
     print('Failed to save html:', fail)
