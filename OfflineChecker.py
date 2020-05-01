@@ -2,8 +2,9 @@ import pythondcspro as pythondcs
 import datetime, configparser, textwrap, argparse
 from operator import itemgetter
 
-def MACHex(MacInt):
-  return pythondcs.macint_to_hex(MacInt)
+# Shortcut functions
+MACasHex = pythondcs.macint_to_hex
+MACasInt = pythondcs.machex_to_int
 
 def MACConv(MACstr):
   return '.'.join([MACstr.replace(':', '').lower()[i:i+4] for i in range(0, 12, 4)])
@@ -20,12 +21,12 @@ def ListIDCs(outputstring, MACList):
     FullOutput+=outputstring
   for IDC in sorted(MACList, key=GetTimes):
     if IDC in IDCs:
-      HexMAC = MACHex(IDC)
+      HexMAC = MACasHex(IDC)
       DotMAC = MACConv(HexMAC)
       outputstring = '<tr><td><a href="{NetDiagUrl}{MACLINK}">{MAC}</a></td><td><a href="{DCSurl}/idcs/{NameLink}">{Name}</a></td><td>{Ip}</td><td>{Time:%Y-%m-%d %H:%M:%S}</td></tr>'.format(NetDiagUrl=NetDiagUrl, MACLINK=DotMAC, MAC=HexMAC, DCSurl=DCSurl, NameLink=IDC, Name=IDCs[IDC]["name"], Ip=IDCs[IDC]['ipAddress'], Time=datetime.datetime.strptime(IDCs[IDC]['lastConnectedTime'].replace("Z","+0000"), "%Y-%m-%dT%H:%M:%S%z").astimezone())
       FullOutput+=outputstring
     else:
-      outputstring = '<tr><td>{MAC}</td><td colspan="3" style="text-align: center">Not found in the database</td></tr>'.format(MAC=MACHex(IDC))
+      outputstring = '<tr><td>{MAC}</td><td colspan="3" style="text-align: center">Not found in the database</td></tr>'.format(MAC=MACasHex(IDC))
       FullOutput+=outputstring
   FullOutput+='</table><br>'
 
@@ -36,10 +37,10 @@ def ListDevices(outputstring, IDList):
     outputstring = '<tr><td colspan="6" style="text-align: center">-- None --</td></tr>'
     FullOutput+=outputstring
   for Dev in sorted(IDList):
-    if Dev in AllDevices:
-      MACInt = int(AllDevices[Dev]['macAddress'])
-      IDC = MACHex(MACInt)
-      outputstring = '<tr><td>{ID}</td><td>{MAC}</td><td><a href="{DCSurl}/idcs/{NameLink}">{Name}</a></td><td>{Desc}</td><td>{SN}</td><td>{Addr}</td></tr>'.format(DCSurl=DCSurl, ID=AllDevices[Dev]['id'], MAC=IDC, NameLink=MACInt, Name=IDCs[MACInt]["name"], Desc=AllDevices[Dev]['description'], SN=AllDevices[Dev]['serialNumber'], Addr=AllDevices[Dev]['address'])
+    if Dev in AllSuspectDevices:
+      MacInt = int(AllSuspectDevices[Dev]['macAddress'])
+      IDC = MACasHex(MacInt)
+      outputstring = '<tr><td>{ID}</td><td>{MAC}</td><td><a href="{DCSurl}/idcs/{NameLink}">{Name}</a></td><td>{Desc}</td><td>{SN}</td><td>{Addr}</td></tr>'.format(DCSurl=DCSurl, ID=AllSuspectDevices[Dev]['id'], MAC=IDC, NameLink=MacInt, Name=IDCs[MacInt]["name"], Desc=AllSuspectDevices[Dev]['description'], SN=AllSuspectDevices[Dev]['serialNumber'], Addr=AllSuspectDevices[Dev]['address'])
       FullOutput+=outputstring
     else:
       outputstring = '<tr><td>{ID}</td><td colspan="5" style="text-align: center">Not found in the database</td></tr>'.format(ID=Dev)
@@ -59,7 +60,7 @@ def GetConnectedIdcInformation():
 
 def GetModbusDevicesByIdc(MAC):
   try:
-    print("Getting devices for IDC {}...".format(MACHex(MAC)), end=' ')
+    print("Getting devices for IDC {}...".format(MACasHex(MAC)), end=' ')
     Response = dcs.get_modbus_devices_by_idc(MAC)
     Devices = { Dev['id'] : Dev for Dev in Response }
     print("{} found".format(len(Devices)))
@@ -93,59 +94,59 @@ dcs = pythondcs.DCSSession(DCSurl, cfg.get('DCS', 'username'), cfg.get('DCS', 'p
 IDCs = GetConnectedIdcInformation()
 
 ignoredIDCscfg = cfg.get('DATA', 'ignoredIDCs')
-ignoredIDCs = set([ pythondcs.machex_to_int(id) for id in ignoredIDCscfg.split(',') ] if ignoredIDCscfg != '' else [])
+ignoredIDCs = set([ MACasInt(id) for id in ignoredIDCscfg.split(',') ] if ignoredIDCscfg != '' else [])
 
 PrevOfflineIDCscfg = cfg.get('DATA', 'offlineIDCs')
-PrevOfflineIDCs = set([ pythondcs.machex_to_int(id) for id in PrevOfflineIDCscfg.split(',') ] if PrevOfflineIDCscfg != '' else [])
+PrevOfflineIDCs = set([ MACasInt(id) for id in PrevOfflineIDCscfg.split(',') ] if PrevOfflineIDCscfg != '' else [])
 
 OfflineIDCs = { i for i in IDCs if datetime.datetime.strptime(IDCs[i]['lastConnectedTime'].replace("Z","+0000"), "%Y-%m-%dT%H:%M:%S%z") < lastrun } - ignoredIDCs
 OfflineIDCsNow = OfflineIDCs-PrevOfflineIDCs
-StillOfflineIDCs = PrevOfflineIDCs & OfflineIDCs
-NowOnlineIDCs = PrevOfflineIDCs - OfflineIDCs
+DevicesStillOfflineIDCs = PrevOfflineIDCs & OfflineIDCs
+DevicesNowOnlineIDCs = PrevOfflineIDCs - OfflineIDCs
 
-cfg.set('DATA', 'offlineIDCs', ','.join(map(MACHex, sorted(OfflineIDCs))))
-cfg.set('DATA', 'ignoredIDCs', ','.join(map(MACHex, sorted(ignoredIDCs))))
+cfg.set('DATA', 'offlineIDCs', ','.join(map(MACasHex, sorted(OfflineIDCs))))
+cfg.set('DATA', 'ignoredIDCs', ','.join(map(MACasHex, sorted(ignoredIDCs))))
 
 print("Getting list of key Devices...")
-AllDevices={}
+AllSuspectDevices={}
 for IDC in ( IDCs[idc]["macAddress"] for idc in IDCs if IDCs[idc]["swVersion"].startswith("4") and IDCs[idc]["modbusDeviceCount"] > 0 and IDCs[idc]["deviceStatusSummary"] != "online" ):
-  AllDevices.update(GetModbusDevicesByIdc(IDC))
+  AllSuspectDevices.update(GetModbusDevicesByIdc(IDC))
 
 dcs.logout()
 del dcs
 
-PrevOfflinecfg = cfg.get('DATA', 'offline')
+PrevOfflinecfg = cfg.get('DATA', 'offlinedevices')
 PrevOffline = set([ int(id) for id in PrevOfflinecfg.split(',') ] if PrevOfflinecfg != '' else [])
 
-ignoredcfg = cfg.get('DATA', 'ignored')
-ignored = set([ int(id) for id in ignoredcfg.split(',') ] if ignoredcfg != '' else [])
+IgnoredDevicescfg = cfg.get('DATA', 'ignoreddevices')
+IgnoredDevices = set([ int(id) for id in IgnoredDevicescfg.split(',') ] if IgnoredDevicescfg != '' else [])
 
-OfflineDevices = { Dev for Dev in AllDevices if AllDevices[Dev]['status'] == "offline" and AllDevices[Dev]['deviceType'] != "modbusMeter" }-ignored
-OfflineNow = OfflineDevices-PrevOffline
-StillOffline = PrevOffline & OfflineDevices
-NowOnline = PrevOffline - OfflineDevices
+KeyOfflineDevices = { Dev for Dev in AllSuspectDevices if AllSuspectDevices[Dev]['status'] == "offline" and AllSuspectDevices[Dev]['deviceType'] != "modbusMeter" }-IgnoredDevices
+OfflineDevicesNow = KeyOfflineDevices-PrevOffline
+DevicesStillOffline = PrevOffline & KeyOfflineDevices
+DevicesNowOnline = PrevOffline - KeyOfflineDevices
 
-cfg.set('DATA', 'offline', ','.join(map(str, sorted(OfflineDevices))))
-cfg.set('DATA', 'ignored', ','.join(map(str, sorted(ignored))))
+cfg.set('DATA', 'offlinedevices', ','.join(map(str, sorted(KeyOfflineDevices))))
+cfg.set('DATA', 'ignoreddevices', ','.join(map(str, sorted(IgnoredDevices))))
 
 print()
 FullOutput='<!DOCTYPE html><html><head><style>table {{border-collapse: collapse; width: 100%}} table, th, td {{ border: 1px solid black; }} th, td {{ padding: 5px; text-align: left; }} caption {{ font-weight: bold; text-align: left; }} tr:nth-child(even) {{background-color: #f2f2f2}} tr:hover {{background-color: #cccccc}} th {{ background-color: #808080; color: white;}}</style></head><body><b><p>Checks run at: {:%Y-%m-%d %H:%M:%S}<br>Last Checks run at: {:%Y-%m-%d %H:%M:%S} ({:.1f} minutes ago)</p></b>'.format(now.astimezone(), lastrun.astimezone(), (now-lastrun).total_seconds()/60.0)
 
 if len(OfflineIDCsNow) != 0: ListIDCs('*** New Offline IDCs found ***', OfflineIDCsNow)
-if len(StillOfflineIDCs) != 0: ListIDCs('Existing Offline IDCs since last check', StillOfflineIDCs)
-if len(NowOnlineIDCs) != 0: ListIDCs('IDCs now appear to be back online', NowOnlineIDCs)
+if len(DevicesStillOfflineIDCs) != 0: ListIDCs('Existing Offline IDCs since last check', DevicesStillOfflineIDCs)
+if len(DevicesNowOnlineIDCs) != 0: ListIDCs('IDCs now appear to be back online', DevicesNowOnlineIDCs)
 if cfg.getboolean('EMAIL', 'showignored'): ListIDCs('The following IDCs are being ignored', ignoredIDCs)
 
-if len(OfflineNow) != 0: ListDevices('*** New Offline Devices found ***', OfflineNow)
-if len(StillOffline) != 0: ListDevices('Existing Offline Devices since last check'.format(lastrun, (now-lastrun).total_seconds()/60.0), StillOffline)
-if len(NowOnline) != 0: ListDevices('Devices now appear to be back online'.format(lastrun, (now-lastrun).total_seconds()/60.0), NowOnline)
-if cfg.getboolean('EMAIL', 'showignored'): ListDevices('The following Devices are being ignored', ignored)
+if len(OfflineDevicesNow) != 0: ListDevices('*** New Offline Devices found ***', OfflineDevicesNow)
+if len(DevicesStillOffline) != 0: ListDevices('Existing Offline Devices since last check'.format(lastrun, (now-lastrun).total_seconds()/60.0), DevicesStillOffline)
+if len(DevicesNowOnline) != 0: ListDevices('Devices now appear to be back online'.format(lastrun, (now-lastrun).total_seconds()/60.0), DevicesNowOnline)
+if cfg.getboolean('EMAIL', 'showignored'): ListDevices('The following Devices are being ignored', IgnoredDevices)
 
 FullOutput+='</body></html>'
 
 #print(FullOutput)
 
-if cfg.getboolean('EMAIL', 'enabled') and (len(OfflineNow) != 0  or len(NowOnline) != 0 or len(OfflineIDCsNow) != 0  or len(NowOnlineIDCs) != 0 or cfg.getboolean('EMAIL', 'alwayssend')):
+if cfg.getboolean('EMAIL', 'enabled') and (len(OfflineDevicesNow) != 0  or len(DevicesNowOnline) != 0 or len(OfflineIDCsNow) != 0  or len(DevicesNowOnlineIDCs) != 0 or cfg.getboolean('EMAIL', 'alwayssend')):
   import smtplib
   from email.mime.text import MIMEText
   msg = MIMEText('\r\n'.join(textwrap.wrap(FullOutput, width=998, break_on_hyphens=False)), 'html')
