@@ -2,18 +2,55 @@ import pythondcspro as pythondcs
 import datetime, configparser, textwrap, argparse
 from operator import itemgetter
 
+# Definition of the short code and friendly name for each device type
+deviceTypes = {"modbusMeter":("M","Modbus Meter"), "pulseCounter":("P","Pulse Counter"),"radioReceiver":("R","Radio Receiver")}
+
 # Shortcut functions
 MACasHex = pythondcs.macint_to_hex
-MACasInt = pythondcs.machex_to_int
+
+def MACasInt(MaxHex):
+  """Converts a Hex MAC into an Integer, or None if that doesn't work"""
+  try:
+    return pythondcs.machex_to_int(MaxHex)
+  except (TypeError,ValueError,AssertionError) as err:
+    print(err)
+    return None
+
 
 def MACConv(MACstr):
+  """Converts MAC string from 01:23:45:67:89:AB to 0123.4567.89ab"""
   return '.'.join([MACstr.replace(':', '').lower()[i:i+4] for i in range(0, 12, 4)])
 
 def GetTimes(idc):
-  if idc not in IDCs: return "\n"
-  else: return IDCs[idc]['lastConnectedTime']
+  """Fetches Last Connected Time for a given IDC (int) or returned line return if not found"""
+  try: return IDCs[idc]['lastConnectedTime']
+  except KeyError: return "\n"
+
+def DeviceAddress(idcslave):
+  """For a given tuple of (idc,slave), both in integer form, return a nicely formatted address including the device typ, such as 01:23:45:67:89:AB-P100"""
+  idc, slave = idcslave
+  try:
+    addr = f"{MACasHex(idc)}-{deviceTypes[IDCs[idc]['modbusDevices'][slave]['deviceType']][0]}{slave}"
+  except KeyError:
+    addr = f"{MACasHex(idc)}-{slave}"
+  return addr
+
+def GetDevice(addr):
+  """Converts a formatted device address such as 01:23:45:67:89:AB-P100 back into a tuple of (idc,slave) in integer form. The letter before the slave address may be M, P, R (upper or lower case) or omitted"""
+  try:
+    addrsplit = addr.split("-")
+    if len(addrsplit) == 2:
+      mac = MACasInt(addrsplit[0])
+      slave = int(float(addrsplit[1].strip("MPRmpr")))
+      return (mac,slave)
+    else:
+      raise ValueError(f'Incorrectly formatted address: "{addr}"')
+  except (TypeError,ValueError,AssertionError) as err:
+    print(err)
+    return (None,None)
 
 def ListIDCs(outputstring, MACList):
+  """Produces a table of details for a given 'MACList' with 'outputstring' as a caption/title"""
   global FullOutput
   FullOutput+='<br><table><caption>'+outputstring+'</caption><tr><th>MAC</th><th>Name</th><th>Ip Address</th><th>Last Online</th></tr>'
   if len(MACList) == 0:
@@ -30,24 +67,27 @@ def ListIDCs(outputstring, MACList):
       FullOutput+=outputstring
   FullOutput+='</table><br>'
 
-def ListDevices(outputstring, IDList):
+def ListDevices(outputstring, DevList):
+  """Produces a table of details for a given 'DevList' with 'outputstring' as a caption/title"""
   global FullOutput
-  FullOutput+='<br><table><caption>'+outputstring+'</caption><tr><th>Database ID</th><th>IDC MAC</th><th>IDC Name</th><th>Description</th><th>Serial Number</th><th>Modbus ID</th></tr>'
-  if len(IDList) == 0:
+  FullOutput+='<br><table><caption>'+outputstring+'</caption><tr><th>Device Address</th><th>IDC Name</th><th>Device Type</th><th>Description</th><th>Serial Number</th></tr>'
+  if len(DevList) == 0:
     outputstring = '<tr><td colspan="6" style="text-align: center">-- None --</td></tr>'
     FullOutput+=outputstring
-  for Dev in sorted(IDList):
-    if Dev in AllSuspectDevices:
-      MacInt = int(AllSuspectDevices[Dev]['macAddress'])
-      IDC = MACasHex(MacInt)
-      outputstring = '<tr><td>{ID}</td><td>{MAC}</td><td><a href="{DCSurl}/idcs/{NameLink}">{Name}</a></td><td>{Desc}</td><td>{SN}</td><td>{Addr}</td></tr>'.format(DCSurl=DCSurl, ID=AllSuspectDevices[Dev]['id'], MAC=IDC, NameLink=MacInt, Name=IDCs[MacInt]["name"], Desc=AllSuspectDevices[Dev]['description'], SN=AllSuspectDevices[Dev]['serialNumber'], Addr=AllSuspectDevices[Dev]['address'])
-      FullOutput+=outputstring
-    else:
-      outputstring = '<tr><td>{ID}</td><td colspan="5" style="text-align: center">Not found in the database</td></tr>'.format(ID=Dev)
-      FullOutput+=outputstring
+  for Dev in sorted(DevList):
+    MacInt, slave = Dev
+    try:
+      HexMAC = MACasHex(MacInt)
+      IDCDetails = IDCs[MacInt]
+      DevDetails = IDCDetails['modbusDevices'][slave]
+      outputstring = '<tr><td>{addr}</td><td><a href="{DCSurl}/idcs/{MacInt}">{Name}</a></td><td>{type}</td><td>{Desc}</td><td>{SN}</td></tr>'.format(DCSurl=DCSurl, addr=DeviceAddress(Dev), MAC=HexMAC, MacInt=MacInt, Name=IDCDetails["name"], type=deviceTypes[DevDetails['deviceType']][1], Desc=DevDetails['description'], SN=DevDetails['serialNumber'])
+    except KeyError:
+      outputstring = '<tr><td>{addr}</td><td colspan="5" style="text-align: center">Details not retreived</td></tr>'.format(addr=DeviceAddress(Dev))
+    FullOutput+=outputstring
   FullOutput+='</table><br>'
 
 def GetConnectedIdcInformation():
+  """Fetches list of all IDCs and their details"""
   try:
     print("Getting IDC list...", end=' ')
     Response = dcs.get_idcs()
@@ -59,77 +99,85 @@ def GetConnectedIdcInformation():
   return IDCs
 
 def GetModbusDevicesByIdc(MAC):
+  """Returns a Dict of Offline devices for a given IDC keyed by slave address"""
   try:
     print("Getting devices for IDC {}...".format(MACasHex(MAC)), end=' ')
     Response = dcs.get_modbus_devices_by_idc(MAC)
-    Devices = { Dev['id'] : Dev for Dev in Response }
-    print("{} found".format(len(Devices)))
+    Devices = { Dev['address'] : Dev for Dev in Response }
+    print(f"{len(Devices)} offline device(s) found")
   except pythondcs.requests.RequestException as weberr:
     print("Failed: {}".format(weberr))
     Devices = {}
   return Devices
 
+# Command Line Arguement Parser
 parser = argparse.ArgumentParser(description="Checks DCS Server for Offline devices")
 parser.add_argument("cfg", action='store', metavar=__file__+'.ini', nargs="?", default=__file__+'.ini', type=argparse.FileType('r+t'), help="Path to configuration file")
 args = parser.parse_args()
 
+# Config File Loader
 cfg=configparser.RawConfigParser()
 cfgfile=args.cfg
 cfg.read_file(cfgfile)
 
+# Timestamp
 now = datetime.datetime.now(datetime.timezone.utc)
 try:
   lastrun = datetime.datetime.strptime(cfg.get('DATA', 'run'), '%Y-%m-%d %H:%M:%S.%f%z')
 except ValueError:
   lastrun = now
-
 print("Time of execution is: ", now)
 cfg.set('DATA', 'run', now.strftime('%Y-%m-%d %H:%M:%S.%f%z'))
 
+# Get Login Details
 DCSurl = cfg.get('DCS', 'url')
 NetDiagUrl = cfg.get('DCS', 'netdiagurl')
 
-dcs = pythondcs.DCSSession(DCSurl, cfg.get('DCS', 'username'), cfg.get('DCS', 'password'))
-
-IDCs = GetConnectedIdcInformation()
-
+# Get IDC lists from config
 ignoredIDCscfg = cfg.get('DATA', 'ignoredIDCs')
 ignoredIDCs = set([ MACasInt(id) for id in ignoredIDCscfg.split(',') ] if ignoredIDCscfg != '' else [])
-
+ignoredIDCs.discard(None)
 PrevOfflineIDCscfg = cfg.get('DATA', 'offlineIDCs')
 PrevOfflineIDCs = set([ MACasInt(id) for id in PrevOfflineIDCscfg.split(',') ] if PrevOfflineIDCscfg != '' else [])
+PrevOfflineIDCs.discard(None)
 
+# Get Device lists from config
+PrevOfflineDevicescfg = cfg.get('DATA', 'offlinedevices')
+PrevOfflineDevices = set([ GetDevice(addr) for addr in PrevOfflineDevicescfg.split(',') ] if PrevOfflineDevicescfg != '' else [])
+PrevOfflineDevices.discard((None,None))
+IgnoredDevicescfg = cfg.get('DATA', 'ignoreddevices')
+IgnoredDevices = set([ GetDevice(addr) for addr in IgnoredDevicescfg.split(',') ] if IgnoredDevicescfg != '' else [])
+IgnoredDevices.discard((None,None))
+
+# Get Data from DCS
+dcs = pythondcs.DCSSession(DCSurl, cfg.get('DCS', 'username'), cfg.get('DCS', 'password'))
+IDCs = GetConnectedIdcInformation()
+print("Getting list of key Devices...")
+for idc in IDCs:
+  IDCs[idc]['modbusDevices'] = GetModbusDevicesByIdc(idc) if (IDCs[idc]["swVersion"].startswith("4") and IDCs[idc]["modbusDeviceCount"] > 0 and IDCs[idc]["deviceStatusSummary"] != "online") or (idc in {dev[0] for dev in IgnoredDevices | PrevOfflineDevices}) else {}
+dcs.logout()
+del dcs
+
+# Assess IDCs and and save
 OfflineIDCs = { i for i in IDCs if datetime.datetime.strptime(IDCs[i]['lastConnectedTime'].replace("Z","+0000"), "%Y-%m-%dT%H:%M:%S%z") < lastrun } - ignoredIDCs
 OfflineIDCsNow = OfflineIDCs-PrevOfflineIDCs
 DevicesStillOfflineIDCs = PrevOfflineIDCs & OfflineIDCs
 DevicesNowOnlineIDCs = PrevOfflineIDCs - OfflineIDCs
 
+KeyOfflineDevices = { (idc,slave) for idc in IDCs for slave in IDCs[idc]['modbusDevices'] if IDCs[idc]['modbusDevices'][slave]['status'] == "offline" and IDCs[idc]['modbusDevices'][slave]['deviceType'] != "modbusMeter" }-IgnoredDevices
+OfflineDevicesNow = KeyOfflineDevices-PrevOfflineDevices
+DevicesStillOffline = PrevOfflineDevices & KeyOfflineDevices
+DevicesNowOnline = PrevOfflineDevices - KeyOfflineDevices
+
+# Save results
 cfg.set('DATA', 'offlineIDCs', ','.join(map(MACasHex, sorted(OfflineIDCs))))
 cfg.set('DATA', 'ignoredIDCs', ','.join(map(MACasHex, sorted(ignoredIDCs))))
+cfg.set('DATA', 'offlinedevices', ','.join(map(DeviceAddress, sorted(KeyOfflineDevices))))
+cfg.set('DATA', 'ignoreddevices', ','.join(map(DeviceAddress, sorted(IgnoredDevices))))
 
-print("Getting list of key Devices...")
-AllSuspectDevices={}
-for IDC in ( IDCs[idc]["macAddress"] for idc in IDCs if IDCs[idc]["swVersion"].startswith("4") and IDCs[idc]["modbusDeviceCount"] > 0 and IDCs[idc]["deviceStatusSummary"] != "online" ):
-  AllSuspectDevices.update(GetModbusDevicesByIdc(IDC))
+print() # Print blank space for clarity
 
-dcs.logout()
-del dcs
-
-PrevOfflinecfg = cfg.get('DATA', 'offlinedevices')
-PrevOffline = set([ int(id) for id in PrevOfflinecfg.split(',') ] if PrevOfflinecfg != '' else [])
-
-IgnoredDevicescfg = cfg.get('DATA', 'ignoreddevices')
-IgnoredDevices = set([ int(id) for id in IgnoredDevicescfg.split(',') ] if IgnoredDevicescfg != '' else [])
-
-KeyOfflineDevices = { Dev for Dev in AllSuspectDevices if AllSuspectDevices[Dev]['status'] == "offline" and AllSuspectDevices[Dev]['deviceType'] != "modbusMeter" }-IgnoredDevices
-OfflineDevicesNow = KeyOfflineDevices-PrevOffline
-DevicesStillOffline = PrevOffline & KeyOfflineDevices
-DevicesNowOnline = PrevOffline - KeyOfflineDevices
-
-cfg.set('DATA', 'offlinedevices', ','.join(map(str, sorted(KeyOfflineDevices))))
-cfg.set('DATA', 'ignoreddevices', ','.join(map(str, sorted(IgnoredDevices))))
-
-print()
+# Prepare html output
 FullOutput='<!DOCTYPE html><html><head><style>table {{border-collapse: collapse; width: 100%}} table, th, td {{ border: 1px solid black; }} th, td {{ padding: 5px; text-align: left; }} caption {{ font-weight: bold; text-align: left; }} tr:nth-child(even) {{background-color: #f2f2f2}} tr:hover {{background-color: #cccccc}} th {{ background-color: #808080; color: white;}}</style></head><body><b><p>Checks run at: {:%Y-%m-%d %H:%M:%S}<br>Last Checks run at: {:%Y-%m-%d %H:%M:%S} ({:.1f} minutes ago)</p></b>'.format(now.astimezone(), lastrun.astimezone(), (now-lastrun).total_seconds()/60.0)
 
 if len(OfflineIDCsNow) != 0: ListIDCs('*** New Offline IDCs found ***', OfflineIDCsNow)
@@ -144,7 +192,7 @@ if cfg.getboolean('EMAIL', 'showignored'): ListDevices('The following Devices ar
 
 FullOutput+='</body></html>'
 
-#print(FullOutput)
+# Sent email if required
 
 if cfg.getboolean('EMAIL', 'enabled') and (len(OfflineDevicesNow) != 0  or len(DevicesNowOnline) != 0 or len(OfflineIDCsNow) != 0  or len(DevicesNowOnlineIDCs) != 0 or cfg.getboolean('EMAIL', 'alwayssend')):
   import smtplib
@@ -181,12 +229,14 @@ if cfg.getboolean('EMAIL', 'enabled') and (len(OfflineDevicesNow) != 0  or len(D
 else:
   print("\nNo email sent since nothing has changed (or it was disabled)!")
 
+# Store html output
 try:
   with open(cfg.get('FILES','html',fallback=__file__+'.html'), 'wt') as dump:
     dump.write(FullOutput)
 except Exception as fail:
     print('Failed to save html:', fail)
 
+# Store config details
 cfgfile.seek(0)
 cfg.write(cfgfile)
 cfgfile.truncate()
