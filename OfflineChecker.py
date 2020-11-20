@@ -1,6 +1,7 @@
 import pythondcspro as pythondcs
 import datetime, configparser, textwrap, argparse
-from operator import itemgetter
+import smtplib
+from email.mime.text import MIMEText
 
 # Definition of the short code and friendly name for each device type
 deviceTypes = {"modbusMeter":("M","Modbus Meter"), "pulseCounter":("P","Pulse Counter"),"radioReceiver":("R","Radio Receiver")}
@@ -15,7 +16,6 @@ def MACasInt(MaxHex):
   except (TypeError,ValueError,AssertionError) as err:
     print(err)
     return None
-
 
 def MACConv(MACstr):
   """Converts MAC string from 01:23:45:67:89:AB to 0123.4567.89ab"""
@@ -192,21 +192,17 @@ if cfg.getboolean('EMAIL', 'showignored'): ListDevices('The following Devices ar
 
 FullOutput+='</body></html>'
 
-# Sent email if required
+# Send email if required
 
 if cfg.getboolean('EMAIL', 'enabled') and (len(OfflineDevicesNow) != 0  or len(DevicesNowOnline) != 0 or len(OfflineIDCsNow) != 0  or len(DevicesNowOnlineIDCs) != 0 or cfg.getboolean('EMAIL', 'alwayssend')):
-  import smtplib
-  from email.mime.text import MIMEText
   msg = MIMEText('\r\n'.join(textwrap.wrap(FullOutput, width=998, break_on_hyphens=False)), 'html')
   msg['From']=cfg.get('EMAIL', 'from')
-  emailto = [ppl.strip() for ppl in cfg.get('EMAIL', 'to').split(',')]
-  msg['To']=','.join(emailto)
+  msg['To']=','.join( [ppl.strip() for ppl in cfg.get('EMAIL', 'to').split(',')] )
   cfg.set('EMAIL', 'to', msg['To'])
-  emailcc = [ppl.strip() for ppl in cfg.get('EMAIL', 'cc').split(',')]
-  msg['Cc']=','.join(emailcc)
+  msg['Cc']=','.join( [ppl.strip() for ppl in cfg.get('EMAIL', 'cc').split(',')] )
   cfg.set('EMAIL', 'cc', msg['Cc'])
-  emailbcc = [ppl.strip() for ppl in cfg.get('EMAIL', 'bcc').split(',')]
-  cfg.set('EMAIL', 'bcc', ','.join(emailbcc))
+  msg['Bcc'] = ','.join( [ppl.strip() for ppl in cfg.get('EMAIL', 'bcc').split(',')] )
+  cfg.set('EMAIL', 'bcc', msg['Bcc'])
   msg['Subject']='Offline Devices'
   print("\nEmailing results to: {}".format(msg['To']))
   if cfg.getboolean('SMTP', 'SSL'):
@@ -215,13 +211,12 @@ if cfg.getboolean('EMAIL', 'enabled') and (len(OfflineDevicesNow) != 0  or len(D
     server = smtplib.SMTP(cfg.get('SMTP', 'server'), cfg.getint('SMTP', 'port'))
   try:
     if cfg.getboolean('SMTP', 'auth'): server.login(cfg.get('SMTP', 'username'), cfg.get('SMTP', 'password'))
-    emailmsg = msg.as_string()
-    server.sendmail(msg['From'], emailto+emailcc+emailbcc, emailmsg)
+    server.send_message(msg)
     server.quit()
     print("Email Sent!")
     try:
       with open(cfg.get('FILES','email',fallback=__file__+'.email'), 'wt') as dump:
-        dump.write(emailmsg)
+        dump.write(msg.as_string())
     except Exception as fail:
       print('Failed to save email:', fail)
   except Exception as fail:
