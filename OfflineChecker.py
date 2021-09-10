@@ -60,7 +60,7 @@ def ListIDCs(outputstring, MACList):
     if IDC in IDCs:
       HexMAC = MACasHex(IDC)
       DotMAC = MACConv(HexMAC)
-      outputstring = '<tr><td><a href="{NetDiagUrl}{MACLINK}">{MAC}</a></td><td><a href="{DCSurl}/idcs/{NameLink}">{Name}</a></td><td>{Ip}</td><td>{Time:%Y-%m-%d %H:%M:%S}</td></tr>'.format(NetDiagUrl=NetDiagUrl, MACLINK=DotMAC, MAC=HexMAC, DCSurl=DCSurl, NameLink=IDC, Name=IDCs[IDC]["name"], Ip=IDCs[IDC]['ipAddress'], Time=datetime.datetime.strptime(IDCs[IDC]['lastConnectedTime'].replace("Z","+0000"), "%Y-%m-%dT%H:%M:%S%z").astimezone())
+      outputstring = '<tr><td><a href="{NetDiagUrl}{MACLINK}{NetDiagSuffix}">{MAC}</a></td><td><a href="{DCSurl}/idcs/{NameLink}">{Name}</a></td><td>{Ip}</td><td>{Time:%Y-%m-%d %H:%M:%S}</td></tr>'.format(NetDiagUrl=NetDiagUrl, MACLINK=DotMAC, NetDiagSuffix=NetDiagSuffix, MAC=HexMAC, DCSurl=DCSurl, NameLink=IDC, Name=IDCs[IDC]["name"], Ip=IDCs[IDC]['ipAddress'], Time=datetime.datetime.strptime(IDCs[IDC]['lastConnectedTime'].replace("Z","+0000"), "%Y-%m-%dT%H:%M:%S%z").astimezone())
       FullOutput+=outputstring
     else:
       outputstring = '<tr><td>{MAC}</td><td colspan="3" style="text-align: center">Not found in the database</td></tr>'.format(MAC=MACasHex(IDC))
@@ -110,7 +110,7 @@ def GetModbusDevicesByIdc(MAC):
     Devices = {}
   return Devices
 
-# Command Line Arguement Parser
+# Command Line Argument Parser
 parser = argparse.ArgumentParser(description="Checks DCS Server for Offline devices")
 parser.add_argument("cfg", action='store', metavar=__file__+'.ini', nargs="?", default=__file__+'.ini', type=argparse.FileType('r+t'), help="Path to configuration file")
 args = parser.parse_args()
@@ -131,7 +131,8 @@ cfg.set('DATA', 'run', now.strftime('%Y-%m-%d %H:%M:%S.%f%z'))
 
 # Get Login Details
 DCSurl = cfg.get('DCS', 'url')
-NetDiagUrl = cfg.get('DCS', 'netdiagurl')
+NetDiagUrl = cfg.get('NETDIAG', 'linkurl')
+NetDiagSuffix = cfg.get('NETDIAG', 'suffix')
 
 # Get IDC lists from config
 ignoredIDCscfg = cfg.get('DATA', 'ignoredIDCs')
