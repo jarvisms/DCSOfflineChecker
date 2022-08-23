@@ -87,11 +87,11 @@ def ListDevices(outputstring, DevList):
   FullOutput+='</table><br>'
 
 def GetConnectedIdcInformation():
-  """Fetches list of all IDCs and their details"""
+  """Fetches list of all IDCs and their details, but only if not Disabled in DCS"""
   try:
     print("Getting IDC list...", end=' ')
     Response = dcs.get_idcs()
-    IDCs = { idc['macAddress'] : idc for idc in Response }
+    IDCs = { idc['macAddress'] : idc for idc in Response if idc["isDisabled"] == False }
     print("{} found".format(len(IDCs)))
   except pythondcs.requests.RequestException as weberr:
     print("Failed: {}".format(weberr))
