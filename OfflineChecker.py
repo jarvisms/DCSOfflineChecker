@@ -60,7 +60,7 @@ def ListIDCs(outputstring, MACList):
     if IDC in IDCs:
       HexMAC = MACasHex(IDC)
       DotMAC = MACConv(HexMAC)
-      outputstring = '<tr><td><a href="{NetDiagUrl}{MACLINK}{NetDiagSuffix}">{MAC}</a></td><td><a href="{DCSurl}/idcs/{NameLink}">{Name}</a></td><td>{Ip}</td><td>{Time:%Y-%m-%d %H:%M:%S}</td></tr>'.format(NetDiagUrl=NetDiagUrl, MACLINK=DotMAC, NetDiagSuffix=NetDiagSuffix, MAC=HexMAC, DCSurl=DCSurl, NameLink=IDC, Name=IDCs[IDC]["name"], Ip=IDCs[IDC]['ipAddress'], Time=datetime.datetime.strptime(IDCs[IDC]['lastConnectedTime'].replace("Z","+0000"), "%Y-%m-%dT%H:%M:%S%z").astimezone())
+      outputstring = '<tr><td><a href="{NetDiagUrl}{MACLINK}{NetDiagSuffix}">{MAC}</a></td><td><a href="{DCSurl}/idcs/{NameLink}">{Name}</a></td><td>{Ip}</td><td>{Time}</td></tr>'.format(NetDiagUrl=NetDiagUrl, MACLINK=DotMAC, NetDiagSuffix=NetDiagSuffix, MAC=HexMAC, DCSurl=DCSurl, NameLink=IDC, Name=IDCs[IDC]["name"], Ip=IDCs[IDC]['ipAddress'], Time=IDCs[IDC]['lastConnectedTime'].strftime('%Y-%m-%d %H:%M:%S') if IDCs[IDC]['lastConnectedTime'] is not None else "Unknown")
       FullOutput+=outputstring
     else:
       outputstring = '<tr><td>{MAC}</td><td colspan="3" style="text-align: center">Not found in the database</td></tr>'.format(MAC=MACasHex(IDC))
@@ -70,7 +70,7 @@ def ListIDCs(outputstring, MACList):
 def ListDevices(outputstring, DevList):
   """Produces a table of details for a given 'DevList' with 'outputstring' as a caption/title"""
   global FullOutput
-  FullOutput+='<br><table><caption>'+outputstring+'</caption><tr><th>Device Address</th><th>IDC Name</th><th>Device Type</th><th>Description</th><th>Serial Number</th></tr>'
+  FullOutput+='<br><table><caption>'+outputstring+'</caption><tr><th>Device Address</th><th>IDC Name</th><th>Device Type</th><th>Description</th><th>Serial Number</th><th>Last Status Change</th></tr>'
   if len(DevList) == 0:
     outputstring = '<tr><td colspan="6" style="text-align: center">-- None --</td></tr>'
     FullOutput+=outputstring
@@ -80,7 +80,7 @@ def ListDevices(outputstring, DevList):
       HexMAC = MACasHex(MacInt)
       IDCDetails = IDCs[MacInt]
       DevDetails = IDCDetails['modbusDevices'][slave]
-      outputstring = '<tr><td>{addr}</td><td><a href="{DCSurl}/idcs/{MacInt}">{Name}</a></td><td>{type}</td><td>{Desc}</td><td>{SN}</td></tr>'.format(DCSurl=DCSurl, addr=DeviceAddress(Dev), MAC=HexMAC, MacInt=MacInt, Name=IDCDetails["name"], type=deviceTypes[DevDetails['deviceType']][1], Desc=DevDetails['description'], SN=DevDetails['serialNumber'])
+      outputstring = '<tr><td>{addr}</td><td><a href="{DCSurl}/idcs/{MacInt}">{Name}</a></td><td>{type}</td><td>{Desc}</td><td>{SN}</td><td>{Time}</td></tr>'.format(DCSurl=DCSurl, addr=DeviceAddress(Dev), MAC=HexMAC, MacInt=MacInt, Name=IDCDetails["name"], type=deviceTypes[DevDetails['deviceType']][1], Desc=DevDetails['description'], SN=DevDetails['serialNumber'], Time=DevDetails['statusTimestamp'].strftime('%Y-%m-%d %H:%M:%S') if DevDetails['statusTimestamp'] is not None else "Unknown")
     except KeyError:
       outputstring = '<tr><td>{addr}</td><td colspan="5" style="text-align: center">Details not retreived</td></tr>'.format(addr=DeviceAddress(Dev))
     FullOutput+=outputstring
@@ -92,6 +92,9 @@ def GetConnectedIdcInformation():
     print("Getting IDC list...", end=' ')
     Response = dcs.get_idcs()
     IDCs = { idc['macAddress'] : idc for idc in Response if idc["isDisabled"] == False }
+    for idc in IDCs:
+      if IDCs[idc]['lastConnectedTime'] is not None:
+        IDCs[idc]['lastConnectedTime'] = datetime.datetime.strptime(IDCs[idc]['lastConnectedTime'].replace("Z","+0000"), "%Y-%m-%dT%H:%M:%S%z")
     print("{} found".format(len(IDCs)))
   except pythondcs.requests.RequestException as weberr:
     print("Failed: {}".format(weberr))
@@ -104,6 +107,9 @@ def GetModbusDevicesByIdc(MAC):
     print("Getting devices for IDC {}...".format(MACasHex(MAC)), end=' ')
     Response = dcs.get_modbus_devices_by_idc(MAC)
     Devices = { Dev['address'] : Dev for Dev in Response }
+    for Dev in Devices:
+      if Devices[Dev]['statusTimestamp'] is not None:
+        Devices[Dev]['statusTimestamp'] = datetime.datetime.strptime(Devices[Dev]['statusTimestamp'].replace("Z","+0000"), "%Y-%m-%dT%H:%M:%S%z")
     print(f"{len(Devices)} offline device(s) found")
   except pythondcs.requests.RequestException as weberr:
     print("Failed: {}".format(weberr))
@@ -129,8 +135,10 @@ except ValueError:
 print("Time of execution is: ", now)
 cfg.set('DATA', 'run', now.strftime('%Y-%m-%d %H:%M:%S.%f%z'))
 
-# Get Login Details
+# Get Login Details and timeouts
 DCSurl = cfg.get('DCS', 'url')
+IDCTimeout = datetime.timedelta(minutes = cfg.getint('DCS', 'idctimeout', fallback=30))
+DevTimeout = datetime.timedelta(minutes = cfg.getint('DCS', 'devtimeout', fallback=30))
 NetDiagUrl = cfg.get('NETDIAG', 'linkurl')
 NetDiagSuffix = cfg.get('NETDIAG', 'suffix')
 
@@ -159,13 +167,13 @@ for idc in IDCs:
 dcs.logout()
 del dcs
 
-# Assess IDCs and and save
-OfflineIDCs = { i for i in IDCs if datetime.datetime.strptime(IDCs[i]['lastConnectedTime'].replace("Z","+0000"), "%Y-%m-%dT%H:%M:%S%z") < lastrun } - ignoredIDCs
+# Assess IDCs and Devices and save
+OfflineIDCs = { i for i in IDCs if ( IDCs[i]['lastConnectedTime'] is None or IDCs[i]['lastConnectedTime'] < (now - IDCTimeout) )} - ignoredIDCs
 OfflineIDCsNow = OfflineIDCs-PrevOfflineIDCs
 DevicesStillOfflineIDCs = PrevOfflineIDCs & OfflineIDCs
 DevicesNowOnlineIDCs = PrevOfflineIDCs - OfflineIDCs
 
-KeyOfflineDevices = { (idc,slave) for idc in IDCs for slave in IDCs[idc]['modbusDevices'] if IDCs[idc]['modbusDevices'][slave]['status'] == "offline" and IDCs[idc]['modbusDevices'][slave]['deviceType'] != "modbusMeter" }-IgnoredDevices
+KeyOfflineDevices = { (idc,slave) for idc in IDCs for slave in IDCs[idc]['modbusDevices'] if IDCs[idc]['modbusDevices'][slave]['deviceType'] != "modbusMeter" and IDCs[idc]['modbusDevices'][slave]['status'] == "offline" and ( IDCs[idc]['modbusDevices'][slave]['statusTimestamp'] is None or IDCs[idc]['modbusDevices'][slave]['statusTimestamp'] < (now - DevTimeout) )}-IgnoredDevices
 OfflineDevicesNow = KeyOfflineDevices-PrevOfflineDevices
 DevicesStillOffline = PrevOfflineDevices & KeyOfflineDevices
 DevicesNowOnline = PrevOfflineDevices - KeyOfflineDevices
@@ -179,7 +187,7 @@ cfg.set('DATA', 'ignoreddevices', ','.join(map(DeviceAddress, sorted(IgnoredDevi
 print() # Print blank space for clarity
 
 # Prepare html output
-FullOutput='<!DOCTYPE html><html><head><style>table {{border-collapse: collapse; width: 100%}} table, th, td {{ border: 1px solid black; }} th, td {{ padding: 5px; text-align: left; }} caption {{ font-weight: bold; text-align: left; }} tr:nth-child(even) {{background-color: #f2f2f2}} tr:hover {{background-color: #cccccc}} th {{ background-color: #808080; color: white;}}</style></head><body><b><p>Checks run at: {:%Y-%m-%d %H:%M:%S}<br>Last Checks run at: {:%Y-%m-%d %H:%M:%S} ({:.1f} minutes ago)</p></b>'.format(now.astimezone(), lastrun.astimezone(), (now-lastrun).total_seconds()/60.0)
+FullOutput='<!DOCTYPE html><html><head><style>table {{border-collapse: collapse; width: 100%}} table, th, td {{ border: 1px solid black; }} th, td {{ padding: 5px; text-align: left; }} caption {{ font-weight: bold; text-align: left; }} tr:nth-child(even) {{background-color: #f2f2f2}} tr:hover {{background-color: #cccccc}} th {{ background-color: #808080; color: white;}}</style></head><body><b><p>Checks run at: {:%Y-%m-%d %H:%M:%S}<br>Last Checks run at: {:%Y-%m-%d %H:%M:%S} ({:.1f} minutes ago)<br>IDC Timeout: {:n} minutes, Device Timeout: {:n} minutes</p></b>'.format(now.astimezone(), lastrun.astimezone(), (now-lastrun).total_seconds()/60.0, IDCTimeout.total_seconds()/60.0, DevTimeout.total_seconds()/60.0)
 
 if len(OfflineIDCsNow) != 0: ListIDCs('*** New Offline IDCs found ***', OfflineIDCsNow)
 if len(DevicesStillOfflineIDCs) != 0: ListIDCs('Existing Offline IDCs since last check', DevicesStillOfflineIDCs)
@@ -187,8 +195,8 @@ if len(DevicesNowOnlineIDCs) != 0: ListIDCs('IDCs now appear to be back online',
 if cfg.getboolean('EMAIL', 'showignored'): ListIDCs('The following IDCs are being ignored', ignoredIDCs)
 
 if len(OfflineDevicesNow) != 0: ListDevices('*** New Offline Devices found ***', OfflineDevicesNow)
-if len(DevicesStillOffline) != 0: ListDevices('Existing Offline Devices since last check'.format(lastrun, (now-lastrun).total_seconds()/60.0), DevicesStillOffline)
-if len(DevicesNowOnline) != 0: ListDevices('Devices now appear to be back online'.format(lastrun, (now-lastrun).total_seconds()/60.0), DevicesNowOnline)
+if len(DevicesStillOffline) != 0: ListDevices('Existing Offline Devices since last check', DevicesStillOffline)
+if len(DevicesNowOnline) != 0: ListDevices('Devices now appear to be back online', DevicesNowOnline)
 if cfg.getboolean('EMAIL', 'showignored'): ListDevices('The following Devices are being ignored', IgnoredDevices)
 
 FullOutput+='</body></html>'
